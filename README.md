@@ -27,6 +27,8 @@ The frontend for a Raspberry Pi-based webcam system, built with Next.js. It prov
    ```bash
    git clone https://github.com/gnaegit/webcam-frontend.git
    cd webcam-frontend
+   mv webcam-frontend /home/pi/webcam/webcam-frontend
+   cd /home/pi/webcam/webcam-frontend
    ```
 
 2. **Install Dependencies**:
