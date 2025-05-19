@@ -1,0 +1,15 @@
+[Unit]
+Description=Webcam Next.js Server
+After=network.target
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/Projects/webcam/
+ExecStart=/home/pi/start-webcam.sh
+Restart=always
+Environment=PORT=3000
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
