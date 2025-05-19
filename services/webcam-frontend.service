@@ -4,8 +4,8 @@ After=network.target
 
 [Service]
 User=pi
-WorkingDirectory=/home/pi/Projects/webcam/
-ExecStart=/home/pi/start-webcam.sh
+WorkingDirectory=/home/pi/webcam/webcam-frontend/
+ExecStart=/home/pi/webcam/webcam-frontend/start-webcam.sh
 Restart=always
 Environment=PORT=3000
 StandardOutput=journal
