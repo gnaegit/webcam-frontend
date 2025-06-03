@@ -3,7 +3,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import useWebSocket, { ReadyState } from "react-use-websocket";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -18,10 +18,14 @@ export default function CameraStream() {
   const [feedback, setFeedback] = useState<string | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ReadyState>(ReadyState.CLOSED);
   const [cameraType, setCameraType] = useState<string | null>(null);
+  const [cameraIndex, setCameraIndex] = useState<number | null>(null);
   const [cameraStatus, setCameraStatus] = useState<{ picamera: boolean; cameraids: boolean }>({
     picamera: false,
     cameraids: false,
   });
+  const [cameras, setCameras] = useState<
+    Array<{ type: string; index: number; display_name: string; model: string; serial: string; label: string }>
+  >([]);
   const [warning, setWarning] = useState<string | null>(null);
 
   const imgRef = useRef<HTMLImageElement>(null);
@@ -55,11 +59,12 @@ export default function CameraStream() {
         setIntervalValue(status.save_interval || 5);
         setIsPreviewing(status.preview_status === "running");
         setCameraType(status.camera_type || null);
+        setCameraIndex(status.camera_index !== undefined ? status.camera_index : null);
         setCameraStatus(status.camera_status || { picamera: false, cameraids: false });
         if (status.stop_reason) {
           setWarning(status.stop_reason);
         } else if (status.storage_status === "running") {
-          setWarning(null); // Clear warning only when storage is actively running
+          setWarning(null);
         }
         console.log("WebSocket update:", status);
       } catch (e) {
@@ -77,6 +82,7 @@ export default function CameraStream() {
         setIntervalValue(data.save_interval || 5);
         setIsPreviewing(data.preview_status === "running");
         setCameraType(data.camera_type || null);
+        setCameraIndex(data.camera_index !== undefined ? data.camera_index : null);
         setCameraStatus(data.camera_status || { picamera: false, cameraids: false });
         if (data.stop_reason) {
           setWarning(data.stop_reason);
@@ -91,8 +97,23 @@ export default function CameraStream() {
     }
   };
 
+  const fetchCameras = async () => {
+    try {
+      const response = await fetch("/py/cameras");
+      const data = await response.json();
+      if (response.ok) {
+        setCameras(data);
+      } else {
+        throw new Error(data.detail || "Failed to fetch cameras");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to fetch camera list.");
+    }
+  };
+
   useEffect(() => {
     fetchInitialStatus();
+    fetchCameras();
   }, []);
 
   useEffect(() => {
@@ -101,8 +122,8 @@ export default function CameraStream() {
     } else {
       setError(null);
     }
-    console.log("Camera type updated:", cameraType);
-  }, [cameraType, cameraStatus]);
+    console.log("Camera type updated:", cameraType, "Camera index:", cameraIndex);
+  }, [cameraType, cameraIndex, cameraStatus]);
 
   const startPreview = useCallback(async () => {
     try {
@@ -132,7 +153,6 @@ export default function CameraStream() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Failed to start storage");
       setError(null);
-      // Do not clear warning here; let WebSocket handle it
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error occurred.");
     }
@@ -144,7 +164,7 @@ export default function CameraStream() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Failed to stop storage");
       setError(null);
-      setWarning(null); // Clear warning when manually stopping storage
+      setWarning(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error occurred.");
     }
@@ -169,18 +189,18 @@ export default function CameraStream() {
 
   const handleSelectCamera = async (value: string) => {
     try {
+      const [type, index] = value.split(":");
       const response = await fetch("/py/select_camera", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ camera_type: value }),
+        body: JSON.stringify({ camera_type: type, index: Number(index) }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Failed to select camera");
-      setFeedback(`Switched to ${value === "picamera" ? "Classic" : "Near-Infrared"} camera.`);
+      const camera = cameras.find((cam) => cam.type === type && cam.index === Number(index));
+      setFeedback(`Switched to ${camera?.display_name || type} camera${type === "cameraids" ? ` (Index ${index})` : ""}.`);
       setError(null);
-      setWarning(null); // Clear warning when switching camera
-
-      // Automatically start preview after switching camera
+      setWarning(null);
       await startPreview();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error occurred.");
@@ -190,6 +210,15 @@ export default function CameraStream() {
 
   const connectionStatusText = ReadyState[connectionStatus];
 
+  const getCurrentCameraLabel = () => {
+    if (!cameraType) return "None";
+    const camera = cameras.find((cam) => cam.type === cameraType && cam.index === (cameraIndex ?? 0));
+    if (camera) {
+      return camera.type === "picamera" ? camera.display_name : `${camera.display_name} (Index ${camera.index})`;
+    }
+    return cameraType === "picamera" ? "Classic Camera" : "Near-Infrared Camera";
+  };
+
   return (
     <div className="w-full max-w-4xl mx-auto space-y-6">
       {/* Camera Selection Card */}
@@ -198,22 +227,32 @@ export default function CameraStream() {
           <CardTitle>Camera Selection</CardTitle>
         </CardHeader>
         <CardContent>
-          <Select value={cameraType || ""} onValueChange={handleSelectCamera}>
+          <Select
+            value={cameraType && cameraIndex !== null ? `${cameraType}:${cameraIndex}` : ""}
+            onValueChange={handleSelectCamera}
+          >
             <SelectTrigger>
               <SelectValue placeholder="Select camera" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="picamera" disabled={!cameraStatus.picamera}>
-                Classic Camera {cameraStatus.picamera ? "" : "(Unavailable)"}
-              </SelectItem>
-              <SelectItem value="cameraids" disabled={!cameraStatus.cameraids}>
-                Near-Infrared Camera {cameraStatus.cameraids ? "" : "(Unavailable)"}
-              </SelectItem>
+              {cameras.map((camera) => (
+                <SelectItem
+                  key={`${camera.type}:${camera.index}`}
+                  value={`${camera.type}:${camera.index}`}
+                  disabled={
+                    (camera.type === "picamera" && !cameraStatus.picamera) ||
+                    (camera.type === "cameraids" && !cameraStatus.cameraids)
+                  }
+                >
+                  {camera.label}
+                  {(camera.type === "picamera" && !cameraStatus.picamera) ||
+                  (camera.type === "cameraids" && !cameraStatus.cameraids)
+                    ? " (Unavailable)"
+                    : ""}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
-          <span className="text-sm text-gray-500 mt-2 block">
-            Current Camera: {cameraType === "picamera" ? "Classic" : cameraType === "cameraids" ? "Near-Infrared" : "None"}
-          </span>
         </CardContent>
       </Card>
 
