@@ -65,6 +65,8 @@ export default function CameraStream() {
     onMessage: (message) => handleWebSocketMessage(message),
   });
 
+  const lastImageTimestamps = useRef<Record<string, number>>({});
+
   const handleWebSocketMessage = (message: MessageEvent) => {
     if (message.data instanceof Blob) {
       const reader = new FileReader();
@@ -86,6 +88,17 @@ export default function CameraStream() {
             ...prev,
             [cameraKey]: { ...prev[cameraKey], preview_status: "running" },
           }));
+
+          // Log image receipt time and calculate interval
+          const currentTime = performance.now(); // High-precision timestamp in milliseconds
+          if (lastImageTimestamps.current[cameraKey]) {
+            const intervalMs = currentTime - lastImageTimestamps.current[cameraKey];
+            const frequencyHz = 1000 / intervalMs; // Convert interval to frequency (images per second)
+            console.log(
+              `Camera ${cameraKey}: New image received. Interval: ${intervalMs.toFixed(2)}ms, Frequency: ${frequencyHz.toFixed(2)}Hz`
+            );
+          }
+          lastImageTimestamps.current[cameraKey] = currentTime;
         }
       };
       reader.readAsBinaryString(message.data);
