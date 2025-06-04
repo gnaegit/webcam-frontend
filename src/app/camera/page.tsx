@@ -6,40 +6,67 @@ import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import Link from "next/link";
 import { usePathname } from "next/navigation";
+import Link from "next/link";
+
+interface Camera {
+  camera_key: string;
+  type: string;
+  index: number;
+  display_name: string;
+  model: string;
+  serial: string;
+  label: string;
+}
+
+interface CameraStatus {
+  preview_status: string;
+  storage_status: string;
+  save_interval: number;
+  current_folder: string | null;
+  camera_type: string;
+  camera_index: number;
+  camera_key: string;
+}
+
+interface WebSocketStatus {
+  cameras?: Record<string, CameraStatus>;
+  stop_reason?: string;
+  camera_key?: string;
+}
 
 export default function CameraStream() {
-  const [isPreviewing, setIsPreviewing] = useState(false);
-  const [isStoringImages, setIsStoringImages] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [interval, setIntervalValue] = useState(5);
-  const [feedback, setFeedback] = useState<string | null>(null);
+  const [cameras, setCameras] = useState<Camera[]>([]);
+  const [cameraStatuses, setCameraStatuses] = useState<Record<string, CameraStatus>>({});
+  const [intervals, setIntervals] = useState<Record<string, number>>({});
+  const [error, setError] = useState<string | string[] | null>(null);
+  const [feedback, setFeedback] = useState<string | string[] | null>(null);
+  const [warning, setWarning] = useState<string | string[] | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ReadyState>(ReadyState.CLOSED);
-  const [cameraType, setCameraType] = useState<string | null>(null);
-  const [cameraIndex, setCameraIndex] = useState<number | null>(null);
-  const [cameraStatus, setCameraStatus] = useState<{ picamera: boolean; cameraids: boolean }>({
-    picamera: false,
-    cameraids: false,
-  });
-  const [cameras, setCameras] = useState<
-    Array<{ type: string; index: number; display_name: string; model: string; serial: string; label: string }>
-  >([]);
-  const [warning, setWarning] = useState<string | null>(null);
+  const [isMounted, setIsMounted] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
 
-  const imgRef = useRef<HTMLImageElement>(null);
+  const imgRefs = useRef<Record<string, HTMLImageElement | null>>({});
   const pathname = usePathname();
   const imagesPath = `${pathname}/images`;
 
-  const { lastMessage, readyState } = useWebSocket("/py/ws", {
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
+
+  const { lastMessage } = useWebSocket("/py/ws", {
     shouldReconnect: () => true,
-    onOpen: () => {
-      setConnectionStatus(ReadyState.OPEN);
-    },
+    onOpen: () => setConnectionStatus(ReadyState.OPEN),
     onClose: () => {
       setConnectionStatus(ReadyState.CLOSED);
-      setIsPreviewing(false);
+      setCameraStatuses((prev) => 
+        Object.fromEntries(
+          Object.entries(prev).map(([key, status]) => [
+            key,
+            { ...status, preview_status: "stopped", storage_status: "stopped" },
+          ])
+        )
+      );
     },
     onError: () => setConnectionStatus(ReadyState.CLOSED),
     onMessage: (message) => handleWebSocketMessage(message),
@@ -47,24 +74,45 @@ export default function CameraStream() {
 
   const handleWebSocketMessage = (message: MessageEvent) => {
     if (message.data instanceof Blob) {
-      const url = URL.createObjectURL(message.data);
-      if (imgRef.current) {
-        imgRef.current.src = url;
-        setIsPreviewing(true);
-      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        const headersEnd = result.indexOf("\r\n\r\n");
+        const headers = result.slice(0, headersEnd).split("\r\n");
+        let cameraKey = "";
+        for (const header of headers) {
+          if (header.startsWith("X-Camera-Key: ")) {
+            cameraKey = header.split(": ")[1];
+            break;
+          }
+        }
+        if (cameraKey && imgRefs.current[cameraKey]) {
+          const imgData = result.slice(headersEnd + 4);
+          imgRefs.current[cameraKey]!.src = `data:image/jpeg;base64,${btoa(imgData)}`;
+          setCameraStatuses((prev) => ({
+            ...prev,
+            [cameraKey]: { ...prev[cameraKey], preview_status: "running" },
+          }));
+        }
+      };
+      reader.readAsBinaryString(message.data);
     } else {
       try {
-        const status = JSON.parse(message.data);
-        setIsStoringImages(status.storage_status === "running");
-        setIntervalValue(status.save_interval || 5);
-        setIsPreviewing(status.preview_status === "running");
-        setCameraType(status.camera_type || null);
-        setCameraIndex(status.camera_index !== undefined ? status.camera_index : null);
-        setCameraStatus(status.camera_status || { picamera: false, cameraids: false });
-        if (status.stop_reason) {
-          setWarning(status.stop_reason);
-        } else if (status.storage_status === "running") {
-          setWarning(null);
+        const status = JSON.parse(message.data) as WebSocketStatus;
+        if (status.cameras) {
+          setCameraStatuses(status.cameras);
+          setIntervals(
+            Object.fromEntries(
+              Object.entries(status.cameras).map(([key, cam]) => [key, cam.save_interval] as [string, number])
+            )
+          );
+          if (status.stop_reason && status.camera_key) {
+            setWarning(`Camera ${status.camera_key}: ${status.stop_reason}`);
+          } else if (
+            Object.values(status.cameras).some((cam) => (cam as CameraStatus).storage_status === "running")
+          ) {
+            setWarning(null);
+          }
         }
         console.log("WebSocket update:", status);
       } catch (e) {
@@ -78,16 +126,14 @@ export default function CameraStream() {
       const response = await fetch("/py/get_stream_status");
       const data = await response.json();
       if (response.ok) {
-        setIsStoringImages(data.storage_status === "running");
-        setIntervalValue(data.save_interval || 5);
-        setIsPreviewing(data.preview_status === "running");
-        setCameraType(data.camera_type || null);
-        setCameraIndex(data.camera_index !== undefined ? data.camera_index : null);
-        setCameraStatus(data.camera_status || { picamera: false, cameraids: false });
-        if (data.stop_reason) {
-          setWarning(data.stop_reason);
-        } else if (data.storage_status === "running") {
-          setWarning(null);
+        setCameraStatuses((data.cameras || {}) as Record<string, CameraStatus>);
+        setIntervals(
+          Object.fromEntries(
+            Object.entries(data.cameras || {}).map(([key, cam]) => [key, (cam as CameraStatus).save_interval] as [string, number])
+          )
+        );
+        if (data.stop_reason && data.camera_key) {
+          setWarning(`Camera ${data.camera_key}: ${data.stop_reason}`);
         }
       } else {
         throw new Error(data.detail || "Failed to fetch status");
@@ -102,248 +148,262 @@ export default function CameraStream() {
       const response = await fetch("/py/cameras");
       const data = await response.json();
       if (response.ok) {
-        setCameras(data);
+        setCameras(data as Camera[]);
       } else {
         throw new Error(data.detail || "Failed to fetch cameras");
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to fetch camera list.");
+    } finally {
+      setIsLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchInitialStatus();
-    fetchCameras();
-  }, []);
-
-  useEffect(() => {
-    if (!cameraType && (cameraStatus.picamera || cameraStatus.cameraids)) {
-      setError("No camera selected. Please select an available camera.");
-    } else {
-      setError(null);
+    if (isMounted) {
+      Promise.all([fetchInitialStatus(), fetchCameras()]).catch((err) =>
+        setError(err instanceof Error ? err.message : "Failed to load data.")
+      );
     }
-    console.log("Camera type updated:", cameraType, "Camera index:", cameraIndex);
-  }, [cameraType, cameraIndex, cameraStatus]);
+  }, [isMounted]);
 
-  const startPreview = useCallback(async () => {
-    try {
-      const response = await fetch("/py/start_preview", { method: "POST" });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Failed to start preview");
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error occurred.");
-    }
-  }, []);
+  const startPreview = useCallback(async (cameraKey: string) => {
+      if (!cameraKey || typeof cameraKey !== "string" || !cameraKey.includes("_")) {
+          setError(`Invalid camera key format: ${cameraKey}`);
+          return;
+      }
+      if (!cameras.some((cam) => cam.camera_key === cameraKey)) {
+          setError(`Camera ${cameraKey} not available. Please check server configuration.`);
+          return;
+      }
+      const payload = { camera_key: cameraKey };
+      console.log("Sending startPreview payload:", payload); // Debug payload
+      try {
+          const response = await fetch("/py/start_preview", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+          });
+          const data = await response.json();
+          console.log("startPreview response:", { status: response.status, data }); // Debug response
+          if (!response.ok) {
+              if (response.status === 422) {
+                  setError(`Invalid request for ${cameraKey}: ${data.detail || "Check camera key"}`);
+              } else {
+                  setError(data.detail || `Failed to start preview for ${cameraKey}`);
+              }
+              throw new Error(data.detail || "Failed to start preview");
+          }
+          setFeedback(`Preview started for ${cameraKey}`);
+          setError(null);
+      } catch (err) {
+          console.error("startPreview error:", err);
+          if (!err.message.includes("Invalid request")) {
+              setError(err instanceof Error ? err.message : `Failed to start preview for ${cameraKey}.`);
+          }
+      }
+  }, [cameras]);
 
-  const stopPreview = useCallback(async () => {
+  const stopPreview = useCallback(async (cameraKey: string) => {
     try {
-      const response = await fetch("/py/stop_preview", { method: "POST" });
+      const response = await fetch("/py/stop_preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ camera_key: cameraKey }),
+      });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Failed to stop preview");
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error occurred.");
+      setError(err instanceof Error ? err.message : `Failed to stop preview for ${cameraKey}.`);
     }
   }, []);
 
-  const startStorage = useCallback(async () => {
+  const startStorage = useCallback(async (cameraKey: string) => {
     try {
-      const response = await fetch("/py/start_storage", { method: "POST" });
+      const response = await fetch("/py/start_storage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ camera_key: cameraKey }),
+      });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Failed to start storage");
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error occurred.");
+      setError(err instanceof Error ? err.message : `Failed to start storage for ${cameraKey}.`);
     }
   }, []);
 
-  const stopStorage = useCallback(async () => {
+  const stopStorage = useCallback(async (cameraKey: string) => {
     try {
-      const response = await fetch("/py/stop_storage", { method: "POST" });
+      const response = await fetch("/py/stop_storage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ camera_key: cameraKey }),
+      });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Failed to stop storage");
       setError(null);
       setWarning(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error occurred.");
+      setError(err instanceof Error ? err.message : `Failed to stop storage for ${cameraKey}.`);
     }
   }, []);
 
-  const handleSetInterval = async () => {
+  const handleSetInterval = useCallback(async (cameraKey: string, interval: number) => {
     try {
       const response = await fetch("/py/set_interval", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ interval: Number(interval) }),
+        body: JSON.stringify({ camera_key: cameraKey, interval }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Failed to set interval");
-      setFeedback(`Interval set to ${interval} seconds.`);
+      setFeedback(`Interval set to ${interval} seconds for ${cameraKey}.`);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error occurred.");
+      setError(err instanceof Error ? err.message : `Failed to set interval for ${cameraKey}.`);
       setFeedback(null);
     }
-  };
-
-  const handleSelectCamera = async (value: string) => {
-    try {
-      const [type, index] = value.split(":");
-      const response = await fetch("/py/select_camera", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ camera_type: type, index: Number(index) }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Failed to select camera");
-      const camera = cameras.find((cam) => cam.type === type && cam.index === Number(index));
-      setFeedback(`Switched to ${camera?.display_name || type} camera${type === "cameraids" ? ` (Index ${index})` : ""}.`);
-      setError(null);
-      setWarning(null);
-      await startPreview();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error occurred.");
-      setFeedback(null);
-    }
-  };
+  }, []);
 
   const connectionStatusText = ReadyState[connectionStatus];
 
-  const getCurrentCameraLabel = () => {
-    if (!cameraType) return "None";
-    const camera = cameras.find((cam) => cam.type === cameraType && cam.index === (cameraIndex ?? 0));
-    if (camera) {
-      return camera.type === "picamera" ? camera.display_name : `${camera.display_name} (Index ${camera.index})`;
-    }
-    return cameraType === "picamera" ? "Classic Camera" : "Near-Infrared Camera";
-  };
+  if (!isMounted) {
+    return null;
+  }
+
+  if (isLoading) {
+    return (
+      <div className="w-full max-w-4xl mx-auto space-y-6">
+        <Alert>
+          <AlertDescription>Loading cameras...</AlertDescription>
+        </Alert>
+      </div>
+    );
+  }
+
+  // Check what the cameras array actually looks like
+  console.log("Raw cameras data:", cameras);
+
 
   return (
     <div className="w-full max-w-4xl mx-auto space-y-6">
-      {/* Camera Selection Card */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Camera Selection</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <Select
-            value={cameraType && cameraIndex !== null ? `${cameraType}:${cameraIndex}` : ""}
-            onValueChange={handleSelectCamera}
-          >
-            <SelectTrigger>
-              <SelectValue placeholder="Select camera" />
-            </SelectTrigger>
-            <SelectContent>
-              {cameras.map((camera) => (
-                <SelectItem
-                  key={`${camera.type}:${camera.index}`}
-                  value={`${camera.type}:${camera.index}`}
-                  disabled={
-                    (camera.type === "picamera" && !cameraStatus.picamera) ||
-                    (camera.type === "cameraids" && !cameraStatus.cameraids)
-                  }
-                >
-                  {camera.label}
-                  {(camera.type === "picamera" && !cameraStatus.picamera) ||
-                  (camera.type === "cameraids" && !cameraStatus.cameraids)
-                    ? " (Unavailable)"
-                    : ""}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </CardContent>
-      </Card>
+      {cameras.length === 0 && (
+        <Alert variant="destructive">
+          <AlertDescription>No cameras available. Please check the server configuration.</AlertDescription>
+        </Alert>
+      )}
+      {cameras.map((camera) => (
+        <Card key={camera.camera_key}>
+          <CardHeader>
+            <CardTitle>{camera.label} ({camera.camera_key})</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-500">
+                Status: {connectionStatusText} | Previewing:{" "}
+                {cameraStatuses[camera.camera_key]?.preview_status === "running" ? "Yes" : "No"}
+              </span>
+              <Button
+                onClick={() =>
+                  cameraStatuses[camera.camera_key]?.preview_status === "running"
+                    ? stopPreview(camera.camera_key)
+                    : startPreview(camera.camera_key)
+                }
+                variant={cameraStatuses[camera.camera_key]?.preview_status === "running" ? "destructive" : "default"}
+                disabled={connectionStatus !== ReadyState.OPEN}
+              >
+                {cameraStatuses[camera.camera_key]?.preview_status === "running" ? "Stop Preview" : "Start Preview"}
+              </Button>
+            </div>
+            <div className="relative bg-gray-100 aspect-video">
+              {connectionStatus !== ReadyState.OPEN && (
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <span className="text-gray-500">{connectionStatusText}...</span>
+                </div>
+              )}
+              <img
+                ref={(el) => (imgRefs.current[camera.camera_key] = el)}
+                alt={`${camera.label} Preview`}
+                className="w-full h-full object-contain"
+              />
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-500">
+                Storage Running: {cameraStatuses[camera.camera_key]?.storage_status === "running" ? "Yes" : "No"}
+              </span>
+              <Button
+                onClick={() =>
+                  cameraStatuses[camera.camera_key]?.storage_status === "running"
+                    ? stopStorage(camera.camera_key)
+                    : startStorage(camera.camera_key)
+                }
+                variant={cameraStatuses[camera.camera_key]?.storage_status === "running" ? "destructive" : "default"}
+              >
+                {cameraStatuses[camera.camera_key]?.storage_status === "running" ? "Stop Storage" : "Start Storage"}
+              </Button>
+            </div>
+            <div className="flex items-center space-x-2">
+              <Input
+                type="number"
+                value={intervals[camera.camera_key] || 5}
+                onChange={(e) =>
+                  setIntervals((prev) => ({ ...prev, [camera.camera_key]: Number(e.target.value) }))
+                }
+                placeholder="Interval in seconds"
+                min={1}
+                step={0.1}
+              />
+              <Button onClick={() => handleSetInterval(camera.camera_key, intervals[camera.camera_key] || 5)}>
+                Set Interval
+              </Button>
+            </div>
+            <div className="text-center">
+              <Link href={`${imagesPath}/${cameraStatuses[camera.camera_key]?.current_folder || ""}`}>
+                <Button variant="secondary" disabled={!cameraStatuses[camera.camera_key]?.current_folder}>
+                  View Stored Images
+                </Button>
+              </Link>
+            </div>
+          </CardContent>
+        </Card>
+      ))}
+      {Array.isArray(error) ? (
+        error.map((err, i) => (
+          <Alert key={`error-${i}-${err}`} variant="destructive">
+            <AlertDescription>{err}</AlertDescription>
+          </Alert>
+        ))
+      ) : error ? (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      ) : null}
 
-      {/* Preview Card */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Camera Preview</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-center justify-between">
-            <span className="text-sm text-gray-500">
-              Status: {connectionStatusText} | Previewing: {isPreviewing ? "Yes" : "No"}
-            </span>
-            <Button
-              onClick={isPreviewing ? stopPreview : startPreview}
-              variant={isPreviewing ? "destructive" : "default"}
-              disabled={connectionStatus !== ReadyState.OPEN || !cameraType}
-            >
-              {isPreviewing ? "Stop Preview" : "Start Preview"}
-            </Button>
-          </div>
+      {Array.isArray(warning) ? (
+        warning.map((warn, i) => (
+          <Alert key={`warning-${i}-${warn}`} variant="destructive">
+            <AlertDescription>{warn}</AlertDescription>
+          </Alert>
+        ))
+      ) : warning ? (
+        <Alert variant="destructive">
+          <AlertDescription>{warning}</AlertDescription>
+        </Alert>
+      ) : null}
 
-          <div className="relative bg-gray-100 aspect-video">
-            {connectionStatus !== ReadyState.OPEN && (
-              <div className="absolute inset-0 flex items-center justify-center">
-                <span className="text-gray-500">{connectionStatusText}...</span>
-              </div>
-            )}
-            <img
-              ref={imgRef}
-              alt="Camera Preview"
-              className="w-full h-full object-contain"
-            />
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Storage Card */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Image Storage</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-center justify-between">
-            <span className="text-sm text-gray-500">
-              Storage Running: {isStoringImages ? "Yes" : "No"}
-            </span>
-            <Button
-              onClick={isStoringImages ? stopStorage : startStorage}
-              variant={isStoringImages ? "destructive" : "default"}
-              disabled={!cameraType}
-            >
-              {isStoringImages ? "Stop Storage" : "Start Storage"}
-            </Button>
-          </div>
-
-          <div className="flex items-center space-x-2">
-            <Input
-              type="number"
-              value={interval}
-              onChange={(e) => setIntervalValue(Number(e.target.value))}
-              placeholder="Interval in seconds"
-              min={1}
-              step={0.1}
-            />
-            <Button onClick={handleSetInterval}>Set Interval</Button>
-          </div>
-
-          <div className="text-center">
-            <Link href={imagesPath}>
-              <Button variant="secondary">View Stored Images</Button>
-            </Link>
-          </div>
-
-          {error && (
-            <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          )}
-          {warning && (
-            <Alert variant="destructive">
-              <AlertDescription>{warning}</AlertDescription>
-            </Alert>
-          )}
-          {feedback && (
-            <Alert>
-              <AlertDescription>{feedback}</AlertDescription>
-            </Alert>
-          )}
-        </CardContent>
-      </Card>
+      {Array.isArray(feedback) ? (
+        feedback.map((fb, i) => (
+          <Alert key={`feedback-${i}-${fb}`}>
+            <AlertDescription>{fb}</AlertDescription>
+          </Alert>
+        ))
+      ) : feedback ? (
+        <Alert>
+          <AlertDescription>{feedback}</AlertDescription>
+        </Alert>
+      ) : null}
     </div>
   );
 }
