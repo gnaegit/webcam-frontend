@@ -29,37 +29,30 @@ interface CameraStatus {
   camera_key: string;
 }
 
-interface WebSocketStatus {
-  cameras?: Record<string, CameraStatus>;
-  stop_reason?: string;
-  camera_key?: string;
-}
-
 export default function CameraStream() {
   const [cameras, setCameras] = useState<Camera[]>([]);
   const [cameraStatuses, setCameraStatuses] = useState<Record<string, CameraStatus>>({});
   const [intervals, setIntervals] = useState<Record<string, number>>({});
-  const [error, setError] = useState<string | string[] | null>(null);
-  const [feedback, setFeedback] = useState<string | string[] | null>(null);
-  const [warning, setWarning] = useState<string | string[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ReadyState>(ReadyState.CLOSED);
   const [isMounted, setIsMounted] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
 
   const imgRefs = useRef<Record<string, HTMLImageElement | null>>({});
   const pathname = usePathname();
   const imagesPath = `${pathname}/images`;
 
   useEffect(() => {
-    setIsMounted(true);
+    setIsMounted(true); // Ensure client-side rendering
   }, []);
 
-  const { lastMessage } = useWebSocket("/py/ws", {
+  const { lastMessage, readyState } = useWebSocket("/py/ws", {
     shouldReconnect: () => true,
     onOpen: () => setConnectionStatus(ReadyState.OPEN),
     onClose: () => {
       setConnectionStatus(ReadyState.CLOSED);
-      setCameraStatuses((prev) => 
+      setCameraStatuses((prev) =>
         Object.fromEntries(
           Object.entries(prev).map(([key, status]) => [
             key,
@@ -98,19 +91,17 @@ export default function CameraStream() {
       reader.readAsBinaryString(message.data);
     } else {
       try {
-        const status = JSON.parse(message.data) as WebSocketStatus;
+        const status = JSON.parse(message.data);
         if (status.cameras) {
           setCameraStatuses(status.cameras);
           setIntervals(
             Object.fromEntries(
-              Object.entries(status.cameras).map(([key, cam]) => [key, cam.save_interval] as [string, number])
+              Object.entries(status.cameras).map(([key, cam]: [string, CameraStatus]) => [key, cam.save_interval])
             )
           );
           if (status.stop_reason && status.camera_key) {
             setWarning(`Camera ${status.camera_key}: ${status.stop_reason}`);
-          } else if (
-            Object.values(status.cameras).some((cam) => (cam as CameraStatus).storage_status === "running")
-          ) {
+          } else if (Object.values(status.cameras).some((cam: CameraStatus) => cam.storage_status === "running")) {
             setWarning(null);
           }
         }
@@ -126,10 +117,10 @@ export default function CameraStream() {
       const response = await fetch("/py/get_stream_status");
       const data = await response.json();
       if (response.ok) {
-        setCameraStatuses((data.cameras || {}) as Record<string, CameraStatus>);
+        setCameraStatuses(data.cameras || {});
         setIntervals(
           Object.fromEntries(
-            Object.entries(data.cameras || {}).map(([key, cam]) => [key, (cam as CameraStatus).save_interval] as [string, number])
+            Object.entries(data.cameras || {}).map(([key, cam]: [string, CameraStatus]) => [key, cam.save_interval])
           )
         );
         if (data.stop_reason && data.camera_key) {
@@ -148,61 +139,36 @@ export default function CameraStream() {
       const response = await fetch("/py/cameras");
       const data = await response.json();
       if (response.ok) {
-        setCameras(data as Camera[]);
+        setCameras(data);
       } else {
         throw new Error(data.detail || "Failed to fetch cameras");
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to fetch camera list.");
-    } finally {
-      setIsLoading(false);
     }
   };
 
   useEffect(() => {
     if (isMounted) {
-      Promise.all([fetchInitialStatus(), fetchCameras()]).catch((err) =>
-        setError(err instanceof Error ? err.message : "Failed to load data.")
-      );
+      fetchInitialStatus();
+      fetchCameras();
     }
   }, [isMounted]);
 
   const startPreview = useCallback(async (cameraKey: string) => {
-      if (!cameraKey || typeof cameraKey !== "string" || !cameraKey.includes("_")) {
-          setError(`Invalid camera key format: ${cameraKey}`);
-          return;
-      }
-      if (!cameras.some((cam) => cam.camera_key === cameraKey)) {
-          setError(`Camera ${cameraKey} not available. Please check server configuration.`);
-          return;
-      }
-      const payload = { camera_key: cameraKey };
-      console.log("Sending startPreview payload:", payload); // Debug payload
-      try {
-          const response = await fetch("/py/start_preview", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(payload),
-          });
-          const data = await response.json();
-          console.log("startPreview response:", { status: response.status, data }); // Debug response
-          if (!response.ok) {
-              if (response.status === 422) {
-                  setError(`Invalid request for ${cameraKey}: ${data.detail || "Check camera key"}`);
-              } else {
-                  setError(data.detail || `Failed to start preview for ${cameraKey}`);
-              }
-              throw new Error(data.detail || "Failed to start preview");
-          }
-          setFeedback(`Preview started for ${cameraKey}`);
-          setError(null);
-      } catch (err) {
-          console.error("startPreview error:", err);
-          if (!err.message.includes("Invalid request")) {
-              setError(err instanceof Error ? err.message : `Failed to start preview for ${cameraKey}.`);
-          }
-      }
-  }, [cameras]);
+    try {
+      const response = await fetch("/py/start_preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ camera_key: cameraKey }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Failed to start preview");
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Failed to start preview for ${cameraKey}.`);
+    }
+  }, []);
 
   const stopPreview = useCallback(async (cameraKey: string) => {
     try {
@@ -270,22 +236,8 @@ export default function CameraStream() {
   const connectionStatusText = ReadyState[connectionStatus];
 
   if (!isMounted) {
-    return null;
+    return null; // Prevent SSR rendering
   }
-
-  if (isLoading) {
-    return (
-      <div className="w-full max-w-4xl mx-auto space-y-6">
-        <Alert>
-          <AlertDescription>Loading cameras...</AlertDescription>
-        </Alert>
-      </div>
-    );
-  }
-
-  // Check what the cameras array actually looks like
-  console.log("Raw cameras data:", cameras);
-
 
   return (
     <div className="w-full max-w-4xl mx-auto space-y-6">
@@ -369,41 +321,21 @@ export default function CameraStream() {
           </CardContent>
         </Card>
       ))}
-      {Array.isArray(error) ? (
-        error.map((err, i) => (
-          <Alert key={`error-${i}-${err}`} variant="destructive">
-            <AlertDescription>{err}</AlertDescription>
-          </Alert>
-        ))
-      ) : error ? (
+      {error && (
         <Alert variant="destructive">
           <AlertDescription>{error}</AlertDescription>
         </Alert>
-      ) : null}
-
-      {Array.isArray(warning) ? (
-        warning.map((warn, i) => (
-          <Alert key={`warning-${i}-${warn}`} variant="destructive">
-            <AlertDescription>{warn}</AlertDescription>
-          </Alert>
-        ))
-      ) : warning ? (
+      )}
+      {warning && (
         <Alert variant="destructive">
           <AlertDescription>{warning}</AlertDescription>
         </Alert>
-      ) : null}
-
-      {Array.isArray(feedback) ? (
-        feedback.map((fb, i) => (
-          <Alert key={`feedback-${i}-${fb}`}>
-            <AlertDescription>{fb}</AlertDescription>
-          </Alert>
-        ))
-      ) : feedback ? (
+      )}
+      {feedback && (
         <Alert>
           <AlertDescription>{feedback}</AlertDescription>
         </Alert>
-      ) : null}
+      )}
     </div>
   );
 }
