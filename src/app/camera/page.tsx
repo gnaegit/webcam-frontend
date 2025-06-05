@@ -408,30 +408,28 @@ export default function CameraStream() {
       )}
 
       {/* Storage Card */}
-      {selectedCamera && cameraStatuses[selectedCamera] && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Image Storage</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="text-center">
-              <Link href={imagesPath}>
-                <Button variant="secondary">View Stored Images</Button>
-              </Link>
-            </div>
-            {error && (
-              <Alert variant="destructive">
-                <AlertDescription>{error}</AlertDescription>
-              </Alert>
-            )}
-            {warning && (
-              <Alert variant="destructive">
-                <AlertDescription>{warning}</AlertDescription>
-              </Alert>
-            )}
-          </CardContent>
-        </Card>
-      )}
+      <Card>
+        <CardHeader>
+          <CardTitle>Image Storage</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="text-center">
+            <Link href={imagesPath}>
+              <Button variant="secondary">View Stored Images</Button>
+            </Link>
+          </div>
+          {error && (
+            <Alert variant="destructive">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          )}
+          {warning && (
+            <Alert variant="destructive">
+              <AlertDescription>{warning}</AlertDescription>
+            </Alert>
+          )}
+        </CardContent>
+      </Card>  
     </div>
   );
 }
