@@ -52,6 +52,18 @@ export default async function Home() {
               className="h-2" 
             />
           </div>
+
+          <div className="space-y-2">
+            <h3 className="text-lg font-semibold text-foreground">Storage Usage</h3>
+            <div className="flex justify-between text-sm text-muted-foreground">
+              <span>Used</span>
+              <span>{systemInfo.storageUsage.used.toFixed(2)} / {systemInfo.storageUsage.total.toFixed(2)} GB</span>
+            </div>
+            <Progress 
+              value={(systemInfo.storageUsage.used / systemInfo.storageUsage.total) * 100} 
+              className="h-2" 
+            />
+          </div>
         </CardContent>
       </Card>
     </main>

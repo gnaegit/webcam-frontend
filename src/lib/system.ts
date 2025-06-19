@@ -15,8 +15,32 @@ function getCpuUsage() {
 
 async function getCpuTemp() {
   const { stdout } = await execAsync("vcgencmd measure_temp");
-  // in celsius! OBVIOUSLY!
+  // in celsius
   return parseFloat(stdout.replace("temp=", "").replace("'C", ""));
+}
+
+async function getStorageUsage() {
+  const { stdout } = await execAsync("df -B1 / | tail -1 | awk '{print $2,$3,$4}'");
+  const [totalStorage, usedStorage, freeStorage] = stdout
+    .trim()
+    .split(/\s+/)
+    .map((val) => parseInt(val));
+  return {
+    total: parseFloat(bytesToGB(totalStorage)),
+    used: parseFloat(bytesToGB(usedStorage)),
+    free: parseFloat(bytesToGB(freeStorage)),
+  };
+}
+
+function getMemoryUsage() {
+  const totalMem = os.totalmem();
+  const freeMem = os.freemem();
+  const usedMem = totalMem - freeMem;
+  return {
+    total: parseFloat(bytesToGB(totalMem)),
+    used: parseFloat(bytesToGB(usedMem)),
+    free: parseFloat(bytesToGB(freeMem)),
+  };
 }
 
 function bytesToGB(bytes: number) {
@@ -24,24 +48,11 @@ function bytesToGB(bytes: number) {
 }
 
 export async function getSystemDetails() {
-  // Get CPU usage
-  const cpuUsage = getCpuUsage();
-
-  // Get memory info
-  const totalMem = os.totalmem();
-  const freeMem = os.freemem();
-  const usedMem = totalMem - freeMem;
- 
-  const cpuTemp = await getCpuTemp();
-
   return {
     os,
-    cpuTemp,
-    cpuUsage,
-    memoryUsage: {
-      total: parseFloat(bytesToGB(totalMem)),
-      used: parseFloat(bytesToGB(usedMem)),
-      free: parseFloat(bytesToGB(freeMem)),
-    },
+    cpuTemp: await getCpuTemp(),
+    cpuUsage: getCpuUsage(),
+    memoryUsage: getMemoryUsage(),
+    storageUsage: await getStorageUsage(),
   };
 }
