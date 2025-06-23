@@ -277,6 +277,27 @@ export default function CameraStream() {
     [selectedCamera, startPreview, stopPreview, cameras]
   );
 
+  const handleRestartServer = useCallback(async () => {
+    if (!confirm("Are you sure you want to restart the server? This will stop all camera operations.")) {
+      return;
+    }
+    try {
+      const response = await fetch("/py/restart_server", {
+        method: "POST",
+        headers: { 
+          "Content-Type": "application/json",
+          "Authorization": "Bearer supersecretkey" // Hardcoded for simplicity; use environment variables in production
+        },
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Failed to restart server");
+      setError(null);
+      alert("Server restart initiated. The page will reconnect automatically.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to restart server.");
+    }
+  }, []);
+
   const connectionStatusText = ReadyState[connectionStatus];
 
   return (
@@ -407,16 +428,22 @@ export default function CameraStream() {
         </Card>
       )}
 
-      {/* Storage Card */}
+      {/* Storage and Server Controls Card */}
       <Card>
         <CardHeader>
-          <CardTitle>Image Storage</CardTitle>
+          <CardTitle>Image Storage and Server Controls</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="text-center">
+          <div className="flex justify-between">
             <Link href={imagesPath}>
               <Button variant="secondary">View Stored Images</Button>
             </Link>
+            <Button 
+              variant="destructive" 
+              onClick={handleRestartServer}
+            >
+              Restart Server
+            </Button>
           </div>
           {error && (
             <Alert variant="destructive">
