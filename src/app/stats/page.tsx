@@ -1,9 +1,68 @@
-import { getSystemDetails } from "@/lib/system";
+"use client";
+
+import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 
-export default async function Home() {
-  const systemInfo = await getSystemDetails();
+interface SystemInfo {
+  os: {
+    hostname: () => string;
+    platform: () => string;
+    arch: () => string;
+  };
+  cpuTemp: number;
+  cpuUsage: string[];
+  memoryUsage: { total: number; used: number; free: number };
+  storageUsage: { total: number; used: number; free: number };
+}
+
+export default function Stats() {
+  const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const fetchSystemInfo = async () => {
+      try {
+        const response = await fetch("/api/system");
+        if (!response.ok) {
+          throw new Error("Failed to fetch system details");
+        }
+        const data = await response.json();
+        setSystemInfo(data);
+        setError(null);
+      } catch (err) {
+        setError("Error fetching system details");
+        console.error(err);
+      }
+    };
+
+    // Initial fetch
+    fetchSystemInfo();
+
+    // Set up interval to fetch every 5 seconds
+    const intervalId = setInterval(fetchSystemInfo, 5000);
+
+    // Clean up interval on component unmount
+    return () => clearInterval(intervalId);
+  }, []);
+
+  if (error) {
+    return (
+      <main className="min-h-screen bg-background flex flex-col items-center justify-center p-6">
+        <h1 className="text-3xl font-bold mb-6 text-foreground">Raspberry Pi</h1>
+        <p className="text-red-500">{error}</p>
+      </main>
+    );
+  }
+
+  if (!systemInfo) {
+    return (
+      <main className="min-h-screen bg-background flex flex-col items-center justify-center p-6">
+        <h1 className="text-3xl font-bold mb-6 text-foreground">Raspberry Pi</h1>
+        <p>Loading...</p>
+      </main>
+    );
+  }
 
   return (
     <main className="min-h-screen bg-background flex flex-col items-center justify-center p-6">
@@ -16,9 +75,9 @@ export default async function Home() {
         <CardContent className="space-y-4">
           <div className="space-y-2">
             {[
-              ["Hostname", systemInfo.os.hostname()],
-              ["Platform", systemInfo.os.platform()],
-              ["Architecture", systemInfo.os.arch()],
+              ["Hostname", systemInfo.os.hostname],
+              ["Platform", systemInfo.os.platform],
+              ["Architecture", systemInfo.os.arch],
               ["CPU Temperature", `${systemInfo.cpuTemp.toFixed(1)}°C`],
             ].map(([label, value]) => (
               <div key={label} className="flex justify-between text-sm">
