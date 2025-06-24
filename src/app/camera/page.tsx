@@ -36,6 +36,7 @@ export default function CameraStream() {
   const [interval, setInterval] = useState<number>(5);
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null); // New state for success messages
   const [connectionStatus, setConnectionStatus] = useState<ReadyState>(ReadyState.CLOSED);
   const [isLoadingCameras, setIsLoadingCameras] = useState<boolean>(true);
 
@@ -111,6 +112,12 @@ export default function CameraStream() {
           });
           if (selectedCamera && status.cameras[selectedCamera]) {
             setInterval(status.cameras[selectedCamera].save_interval);
+          }
+          // Handle new image notifications
+          if (status.new_image && status.camera_key === selectedCamera) {
+            setSuccess(`Image captured and saved to <a href="${imagesPath}/${status.new_image}" target="_blank">${status.new_image}</a>`);
+            // Clear success message after 5 seconds
+            setTimeout(() => setSuccess(null), 5000);
           }
           if (status.stop_reason && status.camera_key === selectedCamera) {
             console.warn(`Stop reason for ${status.camera_key}: ${status.stop_reason}`);
@@ -233,6 +240,24 @@ export default function CameraStream() {
       setWarning(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : `Failed to start storage for ${cameraKey}.`);
+    }
+  }, []);
+
+  const captureImage = useCallback(async (cameraKey: string) => {
+    try {
+      console.log(`Capturing image for ${cameraKey}`);
+      const response = await fetch("/py/capture_image", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ camera_key: cameraKey }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Failed to capture image");
+      console.log(`Image captured for ${cameraKey}:`, data);
+      setError(null);
+      // Success message will be handled via WebSocket notification
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Failed to capture image for ${cameraKey}.`);
     }
   }, []);
 
@@ -384,6 +409,13 @@ export default function CameraStream() {
               >
                 {cameraStatuses[selectedCamera].storage_status === "running" ? "Stop Storage" : "Start Storage"}
               </Button>
+              <Button
+                onClick={() => captureImage(selectedCamera)}
+                variant="default"
+                disabled={connectionStatus !== ReadyState.OPEN}
+              >
+                Capture Image
+              </Button>
             </div>
             <div className="flex items-center space-x-2">
               <Input
@@ -453,6 +485,11 @@ export default function CameraStream() {
           {warning && (
             <Alert variant="destructive">
               <AlertDescription>{warning}</AlertDescription>
+            </Alert>
+          )}
+          {success && (
+            <Alert variant="default">
+              <AlertDescription dangerouslySetInnerHTML={{ __html: success }} />
             </Alert>
           )}
         </CardContent>
