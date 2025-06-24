@@ -20,6 +20,12 @@ interface Camera {
   label: string;
 }
 
+interface Binning {
+  horizontal: number;
+  vertical: number;
+  mode: string;
+}
+
 interface CameraStatus {
   preview_status: string;
   storage_status: string;
@@ -27,6 +33,7 @@ interface CameraStatus {
   current_folder: string | null;
   camera_type: string;
   camera_index: number;
+  binning: Binning;
 }
 
 export default function CameraStream() {
@@ -34,6 +41,9 @@ export default function CameraStream() {
   const [selectedCamera, setSelectedCamera] = useState<string | null>(null);
   const [cameraStatuses, setCameraStatuses] = useState<Record<string, CameraStatus>>({});
   const [interval, setInterval] = useState<number>(5);
+  const [binningHorizontal, setBinningHorizontal] = useState<number>(1);
+  const [binningVertical, setBinningVertical] = useState<number>(1);
+  const [binningMode, setBinningMode] = useState<string>("Sum");
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ReadyState>(ReadyState.CLOSED);
@@ -111,6 +121,9 @@ export default function CameraStream() {
           });
           if (selectedCamera && status.cameras[selectedCamera]) {
             setInterval(status.cameras[selectedCamera].save_interval);
+            setBinningHorizontal(status.cameras[selectedCamera].binning.horizontal);
+            setBinningVertical(status.cameras[selectedCamera].binning.vertical);
+            setBinningMode(status.cameras[selectedCamera].binning.mode);
           }
           if (status.stop_reason && status.camera_key === selectedCamera) {
             console.warn(`Stop reason for ${status.camera_key}: ${status.stop_reason}`);
@@ -137,6 +150,9 @@ export default function CameraStream() {
         setCameraStatuses(data.cameras || {});
         if (selectedCamera && data.cameras[selectedCamera]) {
           setInterval(data.cameras[selectedCamera].save_interval);
+          setBinningHorizontal(data.cameras[selectedCamera].binning.horizontal);
+          setBinningVertical(data.cameras[selectedCamera].binning.vertical);
+          setBinningMode(data.cameras[selectedCamera].binning.mode);
         }
         if (data.stop_reason && data.camera_key === selectedCamera) {
           setWarning(`Camera ${data.camera_key}: ${data.stop_reason}`);
@@ -232,7 +248,29 @@ export default function CameraStream() {
       setError(null);
       setWarning(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : `Failed to start storage for ${cameraKey}.`);
+      setError(err instanceof Error ? err.message : `Failed to stop storage for ${cameraKey}.`);
+    }
+  }, []);
+
+  const setBinning = useCallback(async (cameraKey: string, horizontal: number, vertical: number, mode: string) => {
+    try {
+      console.log(`Setting binning for ${cameraKey}: ${horizontal}x${vertical}, mode=${mode}`);
+      const response = await fetch("/py/set_binning", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          camera_key: cameraKey,
+          horizontal_bin_factor: horizontal,
+          vertical_bin_factor: vertical,
+          mode,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Failed to set binning");
+      console.log(`Binning set for ${cameraKey}:`, data);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Failed to set binning for ${cameraKey}.`);
     }
   }, []);
 
@@ -259,7 +297,6 @@ export default function CameraStream() {
       }
       setSelectedCamera(cameraKey);
       if (cameraKey) {
-        const camera = cameras.find((cam) => cam.camera_key === cameraKey);
         try {
           const response = await fetch("/py/select_camera", {
             method: "POST",
@@ -274,7 +311,7 @@ export default function CameraStream() {
         }
       }
     },
-    [selectedCamera, startPreview, stopPreview, cameras]
+    [selectedCamera, startPreview, stopPreview]
   );
 
   const handleRestartServer = useCallback(async () => {
@@ -284,9 +321,9 @@ export default function CameraStream() {
     try {
       const response = await fetch("/py/restart_server", {
         method: "POST",
-        headers: { 
+        headers: {
           "Content-Type": "application/json",
-          "Authorization": "Bearer supersecretkey" // Hardcoded for simplicity; use environment variables in production
+          "Authorization": "Bearer supersecretkey",
         },
       });
       const data = await response.json();
@@ -299,6 +336,7 @@ export default function CameraStream() {
   }, []);
 
   const connectionStatusText = ReadyState[connectionStatus];
+  const isIdsCamera = selectedCamera && cameraStatuses[selectedCamera]?.camera_type === "cameraids";
 
   return (
     <div className="w-full max-w-4xl mx-auto space-y-6 p-4">
@@ -318,10 +356,7 @@ export default function CameraStream() {
             </SelectTrigger>
             <SelectContent>
               {cameras.map((camera) => (
-                <SelectItem
-                  key={camera.camera_key}
-                  value={camera.camera_key}
-                >
+                <SelectItem key={camera.camera_key} value={camera.camera_key}>
                   {camera.label}
                 </SelectItem>
               ))}
@@ -362,6 +397,10 @@ export default function CameraStream() {
               <span className="font-medium">Current Folder:</span>{" "}
               {cameraStatuses[selectedCamera].current_folder || "N/A"}
             </p>
+            <p>
+              <span className="font-medium">Binning:</span>{" "}
+              {cameraStatuses[selectedCamera].binning.horizontal}x{cameraStatuses[selectedCamera].binning.vertical}, {cameraStatuses[selectedCamera].binning.mode}
+            </p>
             <div className="flex items-center space-x-2">
               <Button
                 onClick={() =>
@@ -396,6 +435,64 @@ export default function CameraStream() {
               />
               <Button onClick={() => handleSetInterval(selectedCamera, interval)}>Set Interval</Button>
             </div>
+            {isIdsCamera && (
+              <div className="space-y-2">
+                <p className="font-medium">Binning Settings</p>
+                <div className="flex items-center space-x-2">
+                  <Select
+                    value={binningHorizontal.toString()}
+                    onValueChange={(value) => setBinningHorizontal(Number(value))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Horizontal Binning" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {[1, 2, 4].map((factor) => (
+                        <SelectItem key={factor} value={factor.toString()}>
+                          {factor}x
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select
+                    value={binningVertical.toString()}
+                    onValueChange={(value) => setBinningVertical(Number(value))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Vertical Binning" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {[1, 2, 4].map((factor) => (
+                        <SelectItem key={factor} value={factor.toString()}>
+                          {factor}x
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select
+                    value={binningMode}
+                    onValueChange={setBinningMode}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Binning Mode" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {["Sum", "Average"].map((mode) => (
+                        <SelectItem key={mode} value={mode}>
+                          {mode}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    onClick={() => setBinning(selectedCamera, binningHorizontal, binningVertical, binningMode)}
+                    disabled={connectionStatus !== ReadyState.OPEN}
+                  >
+                    Set Binning
+                  </Button>
+                </div>
+              </div>
+            )}
           </CardContent>
         </Card>
       )}
@@ -438,10 +535,7 @@ export default function CameraStream() {
             <Link href={imagesPath}>
               <Button variant="secondary">View Stored Images</Button>
             </Link>
-            <Button 
-              variant="destructive" 
-              onClick={handleRestartServer}
-            >
+            <Button variant="destructive" onClick={handleRestartServer}>
               Restart Server
             </Button>
           </div>
@@ -456,7 +550,7 @@ export default function CameraStream() {
             </Alert>
           )}
         </CardContent>
-      </Card>  
+      </Card>
     </div>
   );
 }
