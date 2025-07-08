@@ -7,6 +7,8 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -27,6 +29,31 @@ interface CameraStatus {
   current_folder: string | null;
   camera_type: string;
   camera_index: number;
+  parameters: CameraParameters;
+}
+
+interface CameraParameters {
+  exposure: {
+    auto: boolean;
+    min: number | null;
+    max: number | null;
+    increment: number | null;
+    current: number | null;
+  };
+  gain: {
+    auto: boolean;
+    min: number | null;
+    max: number | null;
+    increment: number | null;
+    current: number | null;
+  };
+}
+
+interface CameraSettings {
+  auto_exposure: boolean;
+  exposure_time: number | null;
+  auto_gain: boolean;
+  gain: number | null;
 }
 
 export default function CameraStream() {
@@ -36,9 +63,15 @@ export default function CameraStream() {
   const [interval, setInterval] = useState<number>(5);
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null); // New state for success messages
+  const [success, setSuccess] = useState<string | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ReadyState>(ReadyState.CLOSED);
   const [isLoadingCameras, setIsLoadingCameras] = useState<boolean>(true);
+  const [cameraSettings, setCameraSettings] = useState<CameraSettings>({
+    auto_exposure: true,
+    exposure_time: null,
+    auto_gain: true,
+    gain: null,
+  });
 
   const imgRef = useRef<HTMLImageElement | null>(null);
   const pathname = usePathname();
@@ -112,11 +145,15 @@ export default function CameraStream() {
           });
           if (selectedCamera && status.cameras[selectedCamera]) {
             setInterval(status.cameras[selectedCamera].save_interval);
+            setCameraSettings({
+              auto_exposure: status.cameras[selectedCamera].parameters.exposure.auto,
+              exposure_time: status.cameras[selectedCamera].parameters.exposure.current,
+              auto_gain: status.cameras[selectedCamera].parameters.gain.auto,
+              gain: status.cameras[selectedCamera].parameters.gain.current,
+            });
           }
-          // Handle new image notifications
           if (status.new_image && status.camera_key === selectedCamera) {
             setSuccess(`Image captured and saved to <a href="${imagesPath}/${status.new_image}" target="_blank">${status.new_image}</a>`);
-            // Clear success message after 5 seconds
             setTimeout(() => setSuccess(null), 5000);
           }
           if (status.stop_reason && status.camera_key === selectedCamera) {
@@ -144,6 +181,12 @@ export default function CameraStream() {
         setCameraStatuses(data.cameras || {});
         if (selectedCamera && data.cameras[selectedCamera]) {
           setInterval(data.cameras[selectedCamera].save_interval);
+          setCameraSettings({
+            auto_exposure: data.cameras[selectedCamera].parameters.exposure.auto,
+            exposure_time: data.cameras[selectedCamera].parameters.exposure.current,
+            auto_gain: data.cameras[selectedCamera].parameters.gain.auto,
+            gain: data.cameras[selectedCamera].parameters.gain.current,
+          });
         }
         if (data.stop_reason && data.camera_key === selectedCamera) {
           setWarning(`Camera ${data.camera_key}: ${data.stop_reason}`);
@@ -172,6 +215,54 @@ export default function CameraStream() {
       setIsLoadingCameras(false);
     }
   };
+
+  const fetchCameraParameters = useCallback(async (cameraKey: string) => {
+    try {
+      const response = await fetch(`/py/get_camera_parameters/${cameraKey}`);
+      const data = await response.json();
+      if (response.ok) {
+        setCameraSettings({
+          auto_exposure: data.exposure.auto,
+          exposure_time: data.exposure.current,
+          auto_gain: data.gain.auto,
+          gain: data.gain.current,
+        });
+        setCameraStatuses((prev) => ({
+          ...prev,
+          [cameraKey]: { ...prev[cameraKey], parameters: data },
+        }));
+        setError(null);
+      } else {
+        throw new Error(data.detail || "Failed to fetch camera parameters");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Failed to fetch parameters for ${cameraKey}.`);
+    }
+  }, []);
+
+  const setCameraSettings = useCallback(async (cameraKey: string, settings: CameraSettings) => {
+    try {
+      const response = await fetch("/py/set_camera_settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          camera_key: cameraKey,
+          auto_exposure: settings.auto_exposure,
+          exposure_time: settings.exposure_time,
+          auto_gain: settings.auto_gain,
+          gain: settings.gain,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Failed to set camera settings");
+      setSuccess("Camera settings updated successfully.");
+      setTimeout(() => setSuccess(null), 5000);
+      setError(null);
+      await fetchCameraParameters(cameraKey);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Failed to set settings for ${cameraKey}.`);
+    }
+  }, [fetchCameraParameters]);
 
   useEffect(() => {
     fetchInitialStatus();
@@ -255,7 +346,6 @@ export default function CameraStream() {
       if (!response.ok) throw new Error(data.detail || "Failed to capture image");
       console.log(`Image captured for ${cameraKey}:`, data);
       setError(null);
-      // Success message will be handled via WebSocket notification
     } catch (err) {
       setError(err instanceof Error ? err.message : `Failed to capture image for ${cameraKey}.`);
     }
@@ -284,7 +374,6 @@ export default function CameraStream() {
       }
       setSelectedCamera(cameraKey);
       if (cameraKey) {
-        const camera = cameras.find((cam) => cam.camera_key === cameraKey);
         try {
           const response = await fetch("/py/select_camera", {
             method: "POST",
@@ -294,12 +383,13 @@ export default function CameraStream() {
           const data = await response.json();
           if (!response.ok) throw new Error(data.detail || "Failed to select camera");
           await startPreview(cameraKey);
+          await fetchCameraParameters(cameraKey);
         } catch (err) {
           setError(err instanceof Error ? err.message : `Failed to select camera ${cameraKey}.`);
         }
       }
     },
-    [selectedCamera, startPreview, stopPreview, cameras]
+    [selectedCamera, startPreview, stopPreview, fetchCameraParameters]
   );
 
   const handleRestartServer = useCallback(async () => {
@@ -309,9 +399,9 @@ export default function CameraStream() {
     try {
       const response = await fetch("/py/restart_server", {
         method: "POST",
-        headers: { 
+        headers: {
           "Content-Type": "application/json",
-          "Authorization": "Bearer supersecretkey" // Hardcoded for simplicity; use environment variables in production
+          "Authorization": "Bearer supersecretkey",
         },
       });
       const data = await response.json();
@@ -343,10 +433,7 @@ export default function CameraStream() {
             </SelectTrigger>
             <SelectContent>
               {cameras.map((camera) => (
-                <SelectItem
-                  key={camera.camera_key}
-                  value={camera.camera_key}
-                >
+                <SelectItem key={camera.camera_key} value={camera.camera_key}>
                   {camera.label}
                 </SelectItem>
               ))}
@@ -428,6 +515,82 @@ export default function CameraStream() {
               />
               <Button onClick={() => handleSetInterval(selectedCamera, interval)}>Set Interval</Button>
             </div>
+
+            {cameraStatuses[selectedCamera].camera_type === "cameraids" ? (
+              <div className="space-y-4">
+                <h3 className="font-semibold">Camera Settings</h3>
+                <div className="space-y-2">
+                  <div className="flex items-center space-x-2">
+                    <Switch
+                      id="auto-exposure"
+                      checked={cameraSettings.auto_exposure}
+                      onCheckedChange={(checked) =>
+                        setCameraSettings((prev) => ({ ...prev, auto_exposure: checked, exposure_time: checked ? null : prev.exposure_time || 1000 }))
+                      }
+                    />
+                    <Label htmlFor="auto-exposure">Auto Exposure</Label>
+                  </div>
+                  {!cameraSettings.auto_exposure && (
+                    <div className="flex items-center space-x-2">
+                      <Input
+                        type="number"
+                        value={cameraSettings.exposure_time || ""}
+                        onChange={(e) =>
+                          setCameraSettings((prev) => ({ ...prev, exposure_time: Number(e.target.value) }))
+                        }
+                        placeholder="Exposure time (µs)"
+                        min={cameraStatuses[selectedCamera].parameters?.exposure.min || 0}
+                        max={cameraStatuses[selectedCamera].parameters?.exposure.max || 1000000}
+                        step={cameraStatuses[selectedCamera].parameters?.exposure.increment || 1}
+                      />
+                      <span className="text-sm text-gray-500">
+                        Range: [{cameraStatuses[selectedCamera].parameters?.exposure.min} - {cameraStatuses[selectedCamera].parameters?.exposure.max} µs]
+                      </span>
+                    </div>
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <div className="flex items-center space-x-2">
+                    <Switch
+                      id="auto-gain"
+                      checked={cameraSettings.auto_gain}
+                      onCheckedChange={(checked) =>
+                        setCameraSettings((prev) => ({ ...prev, auto_gain: checked, gain: checked ? null : prev.gain || 0 }))
+                      }
+                    />
+                    <Label htmlFor="auto-gain">Auto Gain</Label>
+                  </div>
+                  {!cameraSettings.auto_gain && (
+                    <div className="flex items-center space-x-2">
+                      <Input
+                        type="number"
+                        value={cameraSettings.gain || ""}
+                        onChange={(e) =>
+                          setCameraSettings((prev) => ({ ...prev, gain: Number(e.target.value)}))
+                        }
+                        placeholder="Gain"
+                        min={cameraStatuses[selectedCamera].parameters?.gain.min || 0}
+                        max={cameraStatuses[selectedCamera].parameters?.gain.max || 100}
+                        step={cameraStatuses[selectedCamera].parameters?.gain.increment || 0.1}
+                      />
+                      <span className="text-sm text-gray-500">
+                        Range: [{cameraStatuses[selectedCamera].parameters?.gain.min} - {cameraStatuses[selectedCamera].parameters?.gain.max}]
+                      </span>
+                    </div>
+                  )}
+                </div>
+                <Button
+                  onClick={() => setCameraSettings(selectedCamera, cameraSettings)}
+                  variant="default"
+                >
+                  Apply Camera Settings
+                </Button>
+              </div>
+            ) : (
+              <p className="text-sm text-gray-500">
+                Manual exposure and gain settings are not supported for Raspberry Pi cameras.
+              </p>
+            )}
           </CardContent>
         </Card>
       )}
@@ -470,8 +633,8 @@ export default function CameraStream() {
             <Link href={imagesPath}>
               <Button variant="secondary">View Stored Images</Button>
             </Link>
-            <Button 
-              variant="destructive" 
+            <Button
+              variant="destructive"
               onClick={handleRestartServer}
             >
               Restart Server
@@ -493,7 +656,7 @@ export default function CameraStream() {
             </Alert>
           )}
         </CardContent>
-      </Card>  
+      </Card>
     </div>
   );
 }
