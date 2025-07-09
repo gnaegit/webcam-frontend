@@ -98,6 +98,7 @@ export default function CameraStream() {
     onError: () => {
       console.log("WebSocket error");
       setConnectionStatus(ReadyState.CLOSED);
+      setError("WebSocket connection failed. Please check the backend server.");
     },
     onMessage: (message) => handleWebSocketMessage(message),
   });
@@ -158,7 +159,7 @@ export default function CameraStream() {
           }
           if (status.stop_reason && status.camera_key === selectedCamera) {
             console.warn(`Stop reason for ${status.camera_key}: ${status.stop_reason}`);
-            setWarning(`Camera ${status.camera_key}: ${status.stop_reason}`);
+            setWarning(`Camera ${status.camera_key}: ${stop_reason}`);
           } else if (
             selectedCamera &&
             status.cameras[selectedCamera]?.storage_status === "running"
@@ -168,6 +169,7 @@ export default function CameraStream() {
         }
       } catch (e) {
         console.error("Failed to parse WebSocket message:", e);
+        setError("Invalid WebSocket message received.");
       }
     }
   };
@@ -195,24 +197,38 @@ export default function CameraStream() {
         throw new Error(data.detail || "Failed to fetch status");
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error occurred.");
+      setError(err instanceof Error ? err.message : "Failed to fetch initial status.");
     }
   };
 
-  const fetchCameras = async () => {
-    try {
-      const response = await fetch("/py/cameras");
-      const data = await response.json();
-      console.log("Fetched cameras:", data);
-      if (response.ok) {
-        setCameras(data);
-      } else {
-        throw new Error(data.detail || "Failed to fetch cameras");
+  const fetchCameras = async (retries = 3, delay = 1000): Promise<void> => {
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        const response = await fetch("/py/cameras");
+        const data = await response.json();
+        console.log("Fetched cameras:", data);
+        if (response.ok) {
+          if (Array.isArray(data) && data.length > 0) {
+            setCameras(data);
+            setError(null);
+          } else {
+            setError("No cameras found. Please connect a camera and try again.");
+          }
+          return;
+        } else {
+          throw new Error(data.detail || `Failed to fetch cameras (status: ${response.status})`);
+        }
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : "Failed to fetch camera list.";
+        console.error(`Attempt ${attempt} failed:`, errorMsg);
+        if (attempt === retries) {
+          setError(errorMsg);
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      } finally {
+        setIsLoadingCameras(false);
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to fetch camera list.");
-    } finally {
-      setIsLoadingCameras(false);
     }
   };
 
@@ -396,7 +412,7 @@ export default function CameraStream() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${serverKey}`,
+          "Authorization": "Bearer supersecretkey",
         },
       });
       const data = await response.json();
@@ -408,6 +424,11 @@ export default function CameraStream() {
     }
   }, []);
 
+  useEffect(() => {
+    fetchInitialStatus();
+    fetchCameras();
+  }, []);
+
   const connectionStatusText = ReadyState[connectionStatus];
 
   return (
@@ -417,13 +438,18 @@ export default function CameraStream() {
           <CardTitle>Camera Selection</CardTitle>
         </CardHeader>
         <CardContent>
+          {error && (
+            <Alert variant="destructive" className="mb-4">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          )}
           <Select
             value={selectedCamera || ""}
             onValueChange={handleSelectCamera}
             disabled={isLoadingCameras}
           >
             <SelectTrigger>
-              <SelectValue placeholder={isLoadingCameras ? "Loading cameras..." : "Select a camera"} />
+              <SelectValue placeholder={isLoadingCameras ? "Loading cameras..." : cameras.length === 0 ? "No cameras available" : "Select a camera"} />
             </SelectTrigger>
             <SelectContent>
               {cameras.map((camera) => (
