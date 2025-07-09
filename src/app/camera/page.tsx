@@ -240,7 +240,7 @@ export default function CameraStream() {
     }
   }, []);
 
-  const setCameraSettings = useCallback(async (cameraKey: string, settings: CameraSettings) => {
+  const updateCameraSettings = useCallback(async (cameraKey: string, settings: CameraSettings) => {
     try {
       const response = await fetch("/py/set_camera_settings", {
         method: "POST",
@@ -263,11 +263,6 @@ export default function CameraStream() {
       setError(err instanceof Error ? err.message : `Failed to set settings for ${cameraKey}.`);
     }
   }, [fetchCameraParameters]);
-
-  useEffect(() => {
-    fetchInitialStatus();
-    fetchCameras();
-  }, []);
 
   const startPreview = useCallback(async (cameraKey: string) => {
     try {
@@ -330,7 +325,7 @@ export default function CameraStream() {
       setError(null);
       setWarning(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : `Failed to start storage for ${cameraKey}.`);
+      setError(err instanceof Error ? err.message : `Failed to stop storage for ${cameraKey}.`);
     }
   }, []);
 
@@ -401,7 +396,7 @@ export default function CameraStream() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": "Bearer supersecretkey",
+          "Authorization": `Bearer ${serverKey}`,
         },
       });
       const data = await response.json();
@@ -417,7 +412,6 @@ export default function CameraStream() {
 
   return (
     <div className="w-full max-w-4xl mx-auto space-y-6 p-4">
-      {/* Camera Selection Card */}
       <Card>
         <CardHeader>
           <CardTitle>Camera Selection</CardTitle>
@@ -442,7 +436,6 @@ export default function CameraStream() {
         </CardContent>
       </Card>
 
-      {/* Camera Information and Controls Card */}
       {selectedCamera && cameraStatuses[selectedCamera] && (
         <Card>
           <CardHeader>
@@ -580,7 +573,7 @@ export default function CameraStream() {
                   )}
                 </div>
                 <Button
-                  onClick={() => setCameraSettings(selectedCamera, cameraSettings)}
+                  onClick={() => updateCameraSettings(selectedCamera, cameraSettings)}
                   variant="default"
                 >
                   Apply Camera Settings
@@ -595,7 +588,6 @@ export default function CameraStream() {
         </Card>
       )}
 
-      {/* Preview Card */}
       {selectedCamera && (
         <Card>
           <CardHeader>
@@ -623,7 +615,6 @@ export default function CameraStream() {
         </Card>
       )}
 
-      {/* Storage and Server Controls Card */}
       <Card>
         <CardHeader>
           <CardTitle>Image Storage and Server Controls</CardTitle>
